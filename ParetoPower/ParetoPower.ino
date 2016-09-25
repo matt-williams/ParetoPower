@@ -4,7 +4,6 @@
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <Adafruit_ADS1015.h>
-//#include <twi.h>
 #include <SoftTimer.h>
 
 const char ssid[] = "hubwestminster";
@@ -13,6 +12,12 @@ const char pass[] = "HubWest1";
 const unsigned short BROADCAST_PORT = 8980;
 const unsigned short HTTP_PORT = 80;
 const unsigned short HTTPS_PORT = 443;
+
+const int POWER0_CHARGING = 4;
+const int POWER0_WASTING = 5;
+
+const int POWER1_CHARGING = 14;
+const int POWER1_WASTING = 12;
 
 const char WORLDPAY_HOST[] = "api.worldpay.com";
 //const char WORLDPAY_FINGERPRINT[] = "69 6E 5E 77 D2 E2 69 96 CD 1E 59 5A BF 09 36 5D 81 EB CA 17";
@@ -25,9 +30,18 @@ uint32_t power2Mean;
 uint16_t power0Vals[16];
 uint16_t power1Vals[16];
 uint16_t power2Vals[16];
+int power0Price;
+int power1Price;
+int power2Price;
+String power0Description;
+String power1Description;
+String power2Description;
 int powerIndex;
 Adafruit_ADS1115 ads;
 Task powerTask(0, NULL);
+
+int power0Charging = 0;
+int power1Charging = 0;
 
 String serverId;
 WiFiUDP udp;
@@ -36,32 +50,77 @@ ESP8266WebServer server(HTTP_PORT);
 Task webServerTask(0, NULL);
 WiFiClientSecure secureClient;
 
+int nextPaymentReferenceId = 0;
+int paymentReferencePriceId[16];
+int paymentReferenceNumberUnits[16];
+int paymentReferencePricePerUnit[16];
+
+void updateConditions() {
+  String description;
+  bool powerOff = false;
+  if (power0Mean < 3200) {
+    description = "Dead calm";
+    power0Price = 10;
+    powerOff = true;
+  } else if (power0Mean < 12800) {
+    description = "Breezy";
+    power0Price = 6;
+  } else {
+    description = "Hurricane";
+    power0Price = 3;
+  }
+  power0Description = String(description + " - " + String(power0Mean >> 6) + "mV");
+  if (power0Charging > 0) {
+    digitalWrite(POWER0_CHARGING, HIGH);
+    digitalWrite(POWER0_WASTING, LOW);    
+    power0Charging--;
+  } else if (powerOff) {
+    digitalWrite(POWER0_CHARGING, LOW);
+    digitalWrite(POWER0_WASTING, LOW);
+  } else {
+    digitalWrite(POWER0_CHARGING, LOW);
+    digitalWrite(POWER0_WASTING, HIGH);
+  }
+  powerOff = false;
+  if (power1Mean < 64000) {
+    description = "Night";
+    power1Price = 10;
+    powerOff = true;
+  } else if (power1Mean < 112000) {
+    description = "Overcast";
+    power1Price = 4;
+  } else {
+    description = "Bright sun";
+    power1Price = 2;
+  }
+  if (power1Charging > 0) {
+    digitalWrite(POWER1_CHARGING, HIGH);
+    digitalWrite(POWER1_WASTING, LOW);    
+    power1Charging--;
+  } else if (powerOff) {
+    digitalWrite(POWER1_CHARGING, LOW);
+    digitalWrite(POWER1_WASTING, LOW);
+  } else {
+    digitalWrite(POWER1_CHARGING, LOW);
+    digitalWrite(POWER1_WASTING, HIGH);
+  }
+  power1Description = String(description + " - " + String(power1Mean >> 6) + "mV");
+  if (power2Mean < 64000) {
+    description = "Night";
+    power2Price = 10;
+  } else if (power2Mean < 112000) {
+    description = "Overcast";
+    power2Price = 4;
+  } else {
+    description = "Bright sun";
+    power2Price = 2;
+  }
+  power2Description = String(description + " - " + String(power2Mean >> 6) + "mV");
+}
+
 void setup()
 {
   Serial.begin(9600);
-
-/*
-  uint8_t msg[] = {0x01, 0xc1, 0x83};
-  Serial.println(twi_writeTo(0x48, msg, 3, true));
-
-  uint16_t config = ADS1015_REG_CONFIG_CQUE_NONE    | // Disable the comparator (default val)
-                    ADS1015_REG_CONFIG_CLAT_NONLAT  | // Non-latching (default val)
-                    ADS1015_REG_CONFIG_CPOL_ACTVLOW | // Alert/Rdy active low   (default val)
-                    ADS1015_REG_CONFIG_CMODE_TRAD   | // Traditional comparator (default val)
-                    ADS1015_REG_CONFIG_DR_1600SPS   | // 1600 samples per second (default)
-                    ADS1015_REG_CONFIG_MODE_SINGLE  | // Single-shot mode (default)
-                    GAIN_TWOTHIRDS                  |
-                    ADS1015_REG_CONFIG_MUX_SINGLE_0 |
-                    ADS1015_REG_CONFIG_OS_SINGLE;
-//  Serial.println(config, HEX);
-  delay(ADS1115_CONVERSIONDELAY);
-
-  uint8_t msg2[] = {0x00};
-  Serial.println(twi_writeTo(0x48, msg, 1, true));
-  Serial.println(twi_readFrom(0x48, msg, 2, true));
-  Serial.println(msg[0], HEX);
-  Serial.println(msg[1], HEX);
-*/
 
   Serial.print("Connecting to ");
   Serial.println(ssid);
@@ -77,9 +136,14 @@ void setup()
   Serial.println(WiFi.localIP());
 
   serverId = "12345678-1234-1234-1234-123456789012"; // TODO generate uniquely
-
   ads.begin();
   Wire.begin(0, 2);
+
+  pinMode(POWER0_CHARGING, OUTPUT);
+  pinMode(POWER0_WASTING, OUTPUT);
+
+  pinMode(POWER1_CHARGING, OUTPUT);
+  pinMode(POWER1_WASTING, OUTPUT);
 
   uint16_t reading0 = ads.readADC_SingleEnded(0);
   uint16_t reading1 = ads.readADC_SingleEnded(1);
@@ -96,6 +160,7 @@ void setup()
     power1Vals[ii] = reading1;
     power2Vals[ii] = reading2;
   }
+  updateConditions();
 
   powerTask = Task(250, [](Task* me) {
     uint16_t reading0 = ads.readADC_SingleEnded(0);
@@ -124,10 +189,11 @@ void setup()
     Serial.print("\t");
     Serial.print(power2Mean / 16);
     Serial.println("");
+    updateConditions();
   });
   SoftTimer.add(&powerTask);
 
-  udp.begin(BROADCAST_PORT);
+  udp.begin(BROADCAST_PORT + 1);
   udpTask = Task(1000, [](Task* me) {
     Serial.println("Sending UDP broadcast");
 
@@ -171,21 +237,29 @@ void setup()
   server.on("/service/0/prices", [](){
     Serial.println("Handling /service/0/prices");
 
-    StaticJsonBuffer<300> jsonBuffer;
+    StaticJsonBuffer<768> jsonBuffer;
 
     JsonObject& root = jsonBuffer.createObject();
     root["serverID"] = serverId;
     JsonArray& services = root.createNestedArray("prices");
     JsonObject& service = services.createNestedObject();
     service["priceID"] = 0;
-    service["priceDescription"] = "Solar energy";
+    service["priceDescription"] = String(String("Wind energy (") + power0Description + ")");
     JsonObject& pricePerUnit = service.createNestedObject("pricePerUnit");
-    pricePerUnit["amount"] = 10;
+    pricePerUnit["amount"] = power0Price;
     pricePerUnit["currencyCode"] = "GBP";
     service["unitID"] = 0;
     service["unitDescription"] = "kWh";
+    JsonObject& service2 = services.createNestedObject();
+    service2["priceID"] = 0;
+    service2["priceDescription"] = String(String("Solar energy (") + power1Description + ")");
+    JsonObject& pricePerUnit2 = service2.createNestedObject("pricePerUnit");
+    pricePerUnit2["amount"] = power1Price;
+    pricePerUnit2["currencyCode"] = "GBP";
+    service2["unitID"] = 0;
+    service2["unitDescription"] = "kWh";
     
-    char buffer[300];
+    char buffer[768];
     root.printTo(buffer, sizeof(buffer));
     server.send(200, "application/json", buffer);
   });
@@ -198,7 +272,20 @@ void setup()
     JsonObject& root = jsonBuffer.parseObject(server.arg("plain"));
     String clientId = root["clientID"];
     int selectedPriceId = root["selectedPriceID"];
+    int pricePerUnit = 0;
+    switch (selectedPriceId) {
+      case 0:
+        pricePerUnit = power0Price;
+        break;
+      case 1:
+        pricePerUnit = power1Price;
+        break;
+    }
     int selectedNumberOfUnits = root["selectedNumberOfUnits"];
+
+    paymentReferencePriceId[nextPaymentReferenceId] = selectedPriceId;
+    paymentReferenceNumberUnits[nextPaymentReferenceId] = selectedNumberOfUnits;
+    paymentReferencePricePerUnit[nextPaymentReferenceId] = pricePerUnit;
 
     StaticJsonBuffer<300> jsonBuffer2;
     JsonObject& root2 = jsonBuffer2.createObject();
@@ -206,10 +293,12 @@ void setup()
     root2["clientID"] = clientId;
     root2["priceID"] = selectedPriceId;
     root2["unitsToSupply"] = selectedNumberOfUnits;
-    root2["totalPrice"] = selectedNumberOfUnits * 10; // TODO Match up with previous pricePerUnit
+    root2["totalPrice"] = selectedNumberOfUnits * pricePerUnit;
     root2["currencyCode"] = "GBP";
-    root2["paymentReferenceId"] = "1234567890"; // TODO Generate dynamically
+    root2["paymentReferenceId"] = String(nextPaymentReferenceId); // TODO Generate securely
     root2["merchantClientKey"] = MERCHANT_CLIENT_KEY;
+
+    nextPaymentReferenceId = ((nextPaymentReferenceId + 1) % 16);
     
     char buffer[300];
     root2.printTo(buffer, sizeof(buffer));
@@ -226,7 +315,7 @@ void setup()
     JsonObject& root = jsonBuffer.parseObject(server.arg("plain"));
     String clientId = root["clientID"];
     String clientToken = root["clientToken"];
-    String paymentReferenceId = root["paymentReferenceID"];
+    int paymentReferenceId = root.get("paymentReferenceID").as<String>().toInt();
     
     Serial.print("Connecting to ");
     Serial.println(WORLDPAY_HOST);
@@ -251,7 +340,7 @@ void setup()
     {
       StaticJsonBuffer<512> jsonBuffer2;
       JsonObject& root2 = jsonBuffer2.createObject();
-      root2["amount"] = 100; // TODO Generate correctly
+      root2["amount"] = paymentReferenceNumberUnits[paymentReferenceId] * paymentReferencePricePerUnit[paymentReferenceId];
       root2["currencyCode"] = "GBP";
       root2["customerOrderCode"] = "ParetoPower charge";
       root2["orderDescription"] = "Car charging payment";
@@ -278,9 +367,9 @@ void setup()
       JsonObject& root2 = jsonBuffer2.createObject();
       root2["serverID"] = serverId;
       root2["clientID"] = clientId;
-      root2["totalPaid"] = 1000; // TODO Calculate correctly
+      root2["totalPaid"] = paymentReferenceNumberUnits[paymentReferenceId] * paymentReferencePricePerUnit[paymentReferenceId];
       JsonObject& token = root2.createNestedObject("serviceDeliveryToken");
-      token["key"] = paymentReferenceId;
+      token["key"] = String(paymentReferenceId);
       token["issued"] = "2016-09-25T15:04:05Z";
       token["expiry"] = "2016-09-25T16:04:05Z";
       token["refundOnExpiry"] = false;
@@ -300,6 +389,7 @@ void setup()
     JsonObject& root = jsonBuffer.parseObject(server.arg("plain"));
     String clientId = root["clientID"];
     JsonObject& serviceDeliveryToken = root["serviceDeliveryToken"];
+    int paymentReferenceId = serviceDeliveryToken.get("key").as<String>().toInt();
     int unitsToSupply= root["unitsToSupply"];
 
     StaticJsonBuffer<512> jsonBuffer2;
@@ -308,7 +398,16 @@ void setup()
     root2["clientID"] = clientId;
     root2["serviceDeliveryToken"] = serviceDeliveryToken;
     root2["unitsToSupply"] = unitsToSupply;
-    
+
+    switch (paymentReferencePriceId[paymentReferenceId]) {
+      case 0:
+        power0Charging += unitsToSupply * 4;
+        break;
+      case 1:
+        power1Charging += unitsToSupply * 4;
+        break;
+    }
+ 
     char buffer[512];
     root2.printTo(buffer, sizeof(buffer));
     server.send(200, "application/json", buffer);
@@ -322,6 +421,7 @@ void setup()
     JsonObject& root = jsonBuffer.parseObject(server.arg("plain"));
     String clientId = root["clientID"];
     JsonObject& serviceDeliveryToken = root["serviceDeliveryToken"];
+    int paymentReferenceId = serviceDeliveryToken.get("key").as<String>().toInt();
     int unitsReceived = root["unitsReceived"];
 
     StaticJsonBuffer<512> jsonBuffer2;
@@ -330,7 +430,16 @@ void setup()
     root2["clientID"] = clientId;
     root2["serviceDeliveryToken"] = serviceDeliveryToken;
     root2["unitsJustSupplied"] = unitsReceived; // TODO Check unitsReceived was correct
-    root2["unitsRemaining"] = 10 - unitsReceived; // TODO Calculate unitsRemaining correctly
+    root2["unitsRemaining"] = paymentReferenceNumberUnits[paymentReferenceId] - unitsReceived;
+
+    switch (paymentReferencePriceId[paymentReferenceId]) {
+      case 0:
+        power0Charging = 0;
+        break;
+      case 1:
+        power1Charging = 0;
+        break;
+    }
     
     char buffer[512];
     root2.printTo(buffer, sizeof(buffer));
