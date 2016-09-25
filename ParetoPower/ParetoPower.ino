@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include <Adafruit_ADS1015.h>
 #include <SoftTimer.h>
+#include <ESP8266HTTPClient.h>
 
 const char ssid[] = "hubwestminster";
 const char pass[] = "HubWest1";
@@ -23,6 +24,8 @@ const char WORLDPAY_HOST[] = "api.worldpay.com";
 //const char WORLDPAY_FINGERPRINT[] = "69 6E 5E 77 D2 E2 69 96 CD 1E 59 5A BF 09 36 5D 81 EB CA 17";
 const char MERCHANT_SERVICE_KEY[] = "T_S_15a8b01b-0356-4085-b901-95ed869c7297";
 const char MERCHANT_CLIENT_KEY[] = "T_C_f9f19867-3ca5-48b9-8a6b-3202230219b9";
+
+const char SDT_URL_BASE[] = "http://172.16.14.23:8080/serviceDeliveryTokens/";
 
 uint32_t power0Mean;
 uint32_t power1Mean;
@@ -44,7 +47,6 @@ int power0Charging = 0;
 int power1Charging = 0;
 
 String serverId;
-WiFiUDP udp;
 Task udpTask(0, NULL);
 ESP8266WebServer server(HTTP_PORT);
 Task webServerTask(0, NULL);
@@ -115,6 +117,37 @@ void updateConditions() {
     power2Price = 2;
   }
   power2Description = String(description + " - " + String(power2Mean >> 6) + "mV");
+}
+
+void saveServiceDeliveryToken(JsonObject& sdt) {
+  HTTPClient http;
+  String key = sdt["key"];
+  String url = String(SDT_URL_BASE) + key;
+  http.begin(url);
+  http.addHeader("Content-type", "application/json");
+  char buffer[256];
+  sdt.printTo(buffer, sizeof(buffer));
+  int httpCode = http.sendRequest("PUT", (uint8_t*)buffer, sdt.measureLength());
+  Serial.print("PUT ServiceDeliveryToken to ");
+  Serial.print(url);
+  Serial.print(" - rc = ");
+  Serial.println(httpCode);
+}
+
+String restoreServiceDeliveryToken(String key) {
+  HTTPClient http;
+  String url = String(SDT_URL_BASE) + key;
+  http.begin(url);
+  int httpCode = http.GET();
+  Serial.print("GET ServiceDeliveryToken to ");
+  Serial.print(url);
+  Serial.print(" - rc = ");
+  Serial.println(httpCode);  
+  if (httpCode == HTTP_CODE_OK) {
+    return http.getString();
+  } else {
+    return "{}";
+  }
 }
 
 void setup()
@@ -192,7 +225,6 @@ void setup()
   });
   SoftTimer.add(&powerTask);
 
-  udp.begin(BROADCAST_PORT + 1);
   udpTask = Task(1000, [](Task* me) {
     Serial.println("Sending UDP broadcast");
 
@@ -209,6 +241,8 @@ void setup()
 
     IPAddress broadcastIp;
     broadcastIp = ~WiFi.subnetMask() | WiFi.gatewayIP();
+    WiFiUDP udp;
+    udp.begin(BROADCAST_PORT + 1);
     udp.beginPacket(broadcastIp, BROADCAST_PORT);
     root.printTo(udp);
     udp.endPacket();
@@ -374,6 +408,9 @@ void setup()
       token["expiry"] = "2016-09-25T16:04:05Z";
       token["refundOnExpiry"] = false;
       token["signature"] = ""; // TODO: Implement signature
+
+      saveServiceDeliveryToken(token);
+      yield();
     
       char buffer[384];
       root2.printTo(buffer, sizeof(buffer));
@@ -392,6 +429,13 @@ void setup()
     JsonObject& serviceDeliveryToken = root["serviceDeliveryToken"];
     int paymentReferenceId = serviceDeliveryToken.get("key").as<String>().toInt();
     int unitsToSupply= root["unitsToSupply"];
+
+    // TODO Re-enable this, once I've figured out how to reduce memory overheads
+    //yield();
+    //restoreServiceDeliveryToken(serviceDeliveryToken.get("key"));
+    //yield();
+    // TODO Check provided Service Delivery Token
+    // TODO Save updated ServiceDeliveryToken
 
     StaticJsonBuffer<512> jsonBuffer2;
     JsonObject& root2 = jsonBuffer2.createObject();
@@ -426,6 +470,13 @@ void setup()
     int paymentReferenceId = serviceDeliveryToken.get("key").as<String>().toInt();
     int unitsReceived = root["unitsReceived"];
 
+    // TODO Re-enable this, once I've figured out how to reduce memory overheads
+    //yield();
+    //restoreServiceDeliveryToken(serviceDeliveryToken.get("key"));
+    //yield();
+    // TODO Check provided Service Delivery Token
+    // TODO Save updated ServiceDeliveryToken
+    
     StaticJsonBuffer<512> jsonBuffer2;
     JsonObject& root2 = jsonBuffer2.createObject();
     root2["serverID"] = serverId;
