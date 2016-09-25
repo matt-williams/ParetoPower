@@ -1,0 +1,1 @@
+This folder contains a wrapper for the Worldpay Within Go API to make it suitable for binding to Android using `gomobile bind` - in particular, to translate to and from JSON (as `gomobile bind` does not support complex types.  The code is below ParetoPower, and that should be copied (or sym-linked) to $GOPATH/src/github.com/matt-williams/ParetoPower.
