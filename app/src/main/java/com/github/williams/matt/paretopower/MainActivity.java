@@ -128,7 +128,7 @@ public class MainActivity extends AppCompatActivity {
                                                                                        " " + pricePerUnit.getString("currencyCode") +
                                                                                        " / " + price.getString("unitDescription") + "\n");
 
-                                                                if (pricePerUnit.getInt("amount") < bestPrice.getJSONObject("pricePerUnit").getInt("amount")) {
+                                                                if (pricePerUnit.getInt("amount") <= bestPrice.getJSONObject("pricePerUnit").getInt("amount")) {
                                                                     bestPrice = price;
                                                                 }
                                                             }
