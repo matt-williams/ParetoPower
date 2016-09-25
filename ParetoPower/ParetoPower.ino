@@ -48,7 +48,6 @@ WiFiUDP udp;
 Task udpTask(0, NULL);
 ESP8266WebServer server(HTTP_PORT);
 Task webServerTask(0, NULL);
-WiFiClientSecure secureClient;
 
 int nextPaymentReferenceId = 0;
 int paymentReferencePriceId[16];
@@ -251,7 +250,7 @@ void setup()
     service["unitID"] = 0;
     service["unitDescription"] = "kWh";
     JsonObject& service2 = services.createNestedObject();
-    service2["priceID"] = 0;
+    service2["priceID"] = 1;
     service2["priceDescription"] = String(String("Solar energy (") + power1Description + ")");
     JsonObject& pricePerUnit2 = service2.createNestedObject("pricePerUnit");
     pricePerUnit2["amount"] = power1Price;
@@ -266,6 +265,7 @@ void setup()
 
   server.on("/service/0/requestTotal", [](){
     Serial.println("Handling /service/requestTotal");
+    Serial.println(server.arg("plain"));
 
     StaticJsonBuffer<200> jsonBuffer;
 
@@ -307,10 +307,9 @@ void setup()
 
   server.on("/payment", [](){
     Serial.println("Handling /payment");
+    Serial.println(server.arg("plain"));
 
     StaticJsonBuffer<384> jsonBuffer;
-
-    Serial.println(server.arg("plain"));
 
     JsonObject& root = jsonBuffer.parseObject(server.arg("plain"));
     String clientId = root["clientID"];
@@ -319,6 +318,7 @@ void setup()
     
     Serial.print("Connecting to ");
     Serial.println(WORLDPAY_HOST);
+    WiFiClientSecure secureClient;
     if (!secureClient.connect(WORLDPAY_HOST, HTTPS_PORT)) {
       server.send(502, "application/json", "{}");
       return;
@@ -383,6 +383,7 @@ void setup()
 
   server.on("/service/0/delivery/begin", [](){
     Serial.println("Handling /service/0/delivery/begin");
+    Serial.println(server.arg("plain"));
 
     StaticJsonBuffer<512> jsonBuffer;
 
@@ -415,6 +416,7 @@ void setup()
 
   server.on("/service/0/delivery/end", [](){
     Serial.println("Handling /service/0/delivery/end");
+    Serial.println(server.arg("plain"));
 
     StaticJsonBuffer<512> jsonBuffer;
 
